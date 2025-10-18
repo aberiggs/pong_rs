@@ -8,7 +8,7 @@ use ggez::{
 
 /// Constants
 const PADDLE_SPEED: f32 = 5.0;
-const BALL_SPEED: f32 = 8.0;
+const BALL_SPEED: f32 = 6.0;
 const PADDLE_WIDTH: f32 = 20.0;
 const PADDLE_HEIGHT: f32 = 100.0;
 const BALL_RADIUS: f32 = 8.0;
@@ -19,14 +19,28 @@ pub struct GameState {
     ball_pos: Point2<f32>,
     ball_vel: Point2<f32>,
     score: (u8, u8), // Play until this overflows ^.^
+    // Represents a user-initiated pause
+    paused: bool,
+    // Delay duration is used to prevent the ball from moving for a short time after a score
+    delay_duration: std::time::Duration,
 }
 
 impl GameState {
     /// Generates a random ball velocity with a random angle
+    /// Avoids angles too close to π/2 to prevent excessive vertical bouncing
     fn random_ball_velocity() -> Point2<f32> {
-        let angle = rand::random::<f32>() * std::f32::consts::PI;
+        // Generate angle between -π/3 and π/3 (avoiding the vertical range)
+        // This ensures the ball has a reasonable horizontal component
+        let angle = (rand::random::<f32>() - 0.5) * 2.0 * std::f32::consts::PI / 3.0;
+
+        let x_direction = if rand::random::<f32>() < 0.5 {
+            1.0
+        } else {
+            -1.0
+        };
+
         Point2 {
-            x: angle.cos() * BALL_SPEED,
+            x: x_direction * angle.cos() * BALL_SPEED,
             y: angle.sin() * BALL_SPEED,
         }
     }
@@ -50,11 +64,13 @@ impl GameState {
             },
             ball_vel: Self::random_ball_velocity(),
             score: (0, 0),
+            paused: false,
+            delay_duration: std::time::Duration::ZERO,
         })
     }
 
-    /// Takes the keyboard context and handles the input.
-    fn handle_input(&mut self, keyboard: &KeyboardContext) -> GameResult {
+    /// Takes the keyboard context and handles the paddle movement.
+    fn handle_paddle_movement(&mut self, keyboard: &KeyboardContext) -> GameResult {
         let mut pos_change = 0.;
 
         for key in keyboard.pressed_keys() {
@@ -138,7 +154,26 @@ impl GameState {
 
 impl EventHandler for GameState {
     fn update(&mut self, ctx: &mut Context) -> GameResult {
-        self.handle_input(&ctx.keyboard)?;
+        let delta_time = ctx.time.delta();
+
+        // Check for pause input before anything
+        if ctx.keyboard.is_key_just_pressed(KeyCode::Space) {
+            self.paused = !self.paused;
+        }
+
+        if self.paused {
+            return Ok(());
+        }
+
+        if self.delay_duration > std::time::Duration::ZERO {
+            self.delay_duration = self
+                .delay_duration
+                .checked_sub(delta_time)
+                .unwrap_or(std::time::Duration::ZERO);
+            return Ok(());
+        }
+
+        self.handle_paddle_movement(&ctx.keyboard)?;
 
         let (width, height) = ctx.gfx.drawable_size();
         self.handle_ball_movement(height)?;
@@ -159,6 +194,9 @@ impl EventHandler for GameState {
                 x: width - PADDLE_WIDTH - 20.,
                 y: (height / 2.) - (PADDLE_HEIGHT / 2.),
             };
+
+            // Now add a short pause
+            self.delay_duration = std::time::Duration::from_secs(1);
         }
 
         Ok(())
@@ -209,18 +247,36 @@ impl EventHandler for GameState {
         canvas.draw(&right_paddle, graphics::DrawParam::new());
         canvas.draw(&ball, graphics::DrawParam::new());
 
+        let (width, height) = ctx.gfx.drawable_size();
+
         // Draw score
-        let score_text = graphics::Text::new(format!("{} - {}", self.score.0, self.score.1));
-        let (width, _height) = ctx.gfx.drawable_size();
+        let mut score_text = graphics::Text::new(format!("{} - {}", self.score.0, self.score.1));
+        score_text.set_scale(24.0);
+        let text_measure = score_text.measure(ctx)?;
         canvas.draw(
             &score_text,
             graphics::DrawParam::new()
                 .dest(Point2 {
-                    x: width / 2.0 - 20.0,
+                    x: (width / 2.0) - (text_measure.x / 2.0),
                     y: 20.0,
                 })
                 .color(Color::WHITE),
         );
+
+        if self.paused {
+            let mut pause_text = graphics::Text::new("Paused");
+            pause_text.set_scale(30.0);
+            let text_measure = pause_text.measure(ctx)?;
+            canvas.draw(
+                &pause_text,
+                graphics::DrawParam::new()
+                    .dest(Point2 {
+                        x: (width / 2.0) - (text_measure.x / 2.0),
+                        y: (height / 2.0) - (text_measure.y / 2.0),
+                    })
+                    .color(Color::RED),
+            );
+        }
 
         canvas.finish(ctx)?;
 
